@@ -1,15 +1,20 @@
 use std::path::{Path, PathBuf};
 
-/// Pinned correction model: Phonon's public refiner, fine-tuned from
-/// LiquidAI/LFM3-1.7B on public and synthetic transcripts, with writing
-/// modes (`phonon_refiner.json` `writing_modes`). One repository holds the
-/// native engine's GGUF target and drafter (`phonon_engine.json`) and the MLX
-/// weights the sidecar falls back to. The revision is exact so an upstream
-/// re-upload cannot change what shipped users run.
-/// RELEASE: the revision is the Hugging Face commit of the upload; set it
-/// after the upload and before tagging.
-pub const POLISH_MODEL_ID: &str = "Infatoshi/phonon-refiner-1.7b";
-pub const POLISH_MODEL_REVISION: &str = "2b0ab74bee7ab7cf364695bbe44f64ce4c47439e";
+/// Pinned correction model: Gemma 4 E2B instruction tuned, 4-bit MLX,
+/// prompted with `prompts/polish_v2.txt`. It has no `phonon_refiner.json`, so
+/// it runs on MLX without the native engine, writing modes or streaming
+/// refine. The revision is exact so an upstream re-upload cannot change what
+/// users run.
+pub const POLISH_MODEL_ID: &str = "mlx-community/gemma-4-e2b-it-4bit";
+pub const POLISH_MODEL_REVISION: &str = "238767527555cb75a05732a84dff5d6ba0dd6809";
+
+// Phonon's public refiner, fine-tuned from LiquidAI/LFM3-1.7B, carries writing
+// modes (`phonon_refiner.json` `writing_modes`), the native engine's GGUF
+// target and drafter (`phonon_engine.json`) and MLX fallback weights. Select
+// it with:
+//   PHONON_POLISH_MODEL=Infatoshi/phonon-refiner-1.7b
+//   PHONON_POLISH_REVISION=2b0ab74bee7ab7cf364695bbe44f64ce4c47439e
+
 /// Pinned runtime, for the same reason.
 pub const POLISH_RUNTIME_REQUIREMENT: &str = "mlx-lm==0.31.3";
 

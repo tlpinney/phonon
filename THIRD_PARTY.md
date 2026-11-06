@@ -24,6 +24,19 @@ packages are still downloaded into the user's normal caches on first launch.
 - Size: 2,471,559,904 bytes
 - SHA-256: `b958c37a6baa6874a279108755c8f2818e27bf647d72d54800a234a421341dfe`
 
+## Gemma 4 E2B (default correction model)
+
+- Source: <https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit>, revision
+  `238767527555cb75a05732a84dff5d6ba0dd6809`
+- Upstream model: Google Gemma 4 E2B instruction tuned,
+  <https://huggingface.co/google/gemma-4-E2B-it>
+- License: Apache-2.0, as Google lists it for `google/gemma-4-E2B-it`. The
+  mlx-community conversion's card metadata still says `gemma`; the 4-bit MLX
+  conversion is of the Apache-2.0 weights. Phonon downloads it unchanged.
+- Primary weight: `model.safetensors`
+- Size: 3,550,670,554 bytes
+- SHA-256: `038e39a37a7667373d2c3991375446b10c96ae1d717a68674870343db376b76e`
+
 ## Phonon refiner 1.7B
 
 - Source: <https://huggingface.co/Infatoshi/phonon-refiner-1.7b>

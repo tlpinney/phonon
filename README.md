@@ -15,9 +15,9 @@ phonon
 ```
 
 The cask installs the Developer ID-signed and notarized app. On first launch
-Phonon downloads Parakeet TDT 0.6B v2 for speech recognition and the Phonon
-refiner 1.7B for correction, both pinned to exact revisions. That is about
-4.9 GB (2.47 GB for Parakeet, 2.40 GB for the refiner) plus the Python packages
+Phonon downloads Parakeet TDT 0.6B v2 for speech recognition and Gemma 4 E2B
+for correction, both pinned to exact revisions. That is about
+6.0 GB (2.47 GB for Parakeet, 3.55 GB for Gemma) plus the Python packages
 `uv` installs, and the one slow start; everything after it is local and offline, apart from a
 once-a-day check of GitHub for a newer release, which carries nothing about you and can be turned off
 in Settings. Tagged releases
@@ -27,9 +27,9 @@ also include the DMG for direct installation. To build from source instead, use
 ## The recipe
 
 - **Hear:** Parakeet TDT 0.6B v2 transcribes on your Mac, on Phonon's own Metal kernels.
-- **Rewrite:** the Phonon refiner 1.7B, fine-tuned from LiquidAI's LFM3-1.7B, turns the transcript into
-  what you meant to type: misheard terms fixed, filler and false starts gone, only the final version kept
-  when you correct yourself.
+- **Rewrite:** Google's Gemma 4 E2B turns the transcript into what you meant to type: misheard terms
+  fixed, filler and false starts gone, only the final version kept when you correct yourself. The
+  Phonon refiner 1.7B, fine-tuned from LiquidAI's LFM3-1.7B, can be selected instead (see Pipeline).
 - **Data:** 76,960 transcripts of public audio and synthetic dictations, each rewritten by DeepSeek
   following a written spec, in four writing modes (casual, formal, prompt, minimal). No personal dictation
   went into it. The pipeline is in `ml/`.
@@ -85,7 +85,18 @@ after Parakeet transcribes a bundled clip through both the batch and the
 streaming path, that transcript goes through the correction model, and a
 representative technical correction succeeds. There is no speech-only mode.
 
-The correction model is the Phonon refiner 1.7B, fine-tuned from LiquidAI's
+The default correction model is Gemma 4 E2B from Google, run on MLX with the
+prompt in `prompts/polish_v2.txt`. It corrects
+once you release the key, without the writing modes, the native engine or the
+live correction described below; those belong to the Phonon refiner. To use the
+refiner instead, start Phonon with
+
+```bash
+PHONON_POLISH_MODEL=Infatoshi/phonon-refiner-1.7b \
+PHONON_POLISH_REVISION=2b0ab74bee7ab7cf364695bbe44f64ce4c47439e phonon
+```
+
+The Phonon refiner 1.7B is fine-tuned from LiquidAI's
 LFM3-1.7B on transcripts of public audio and synthetic transcripts; no personal
 dictation went into it. It writes what you meant to type: misheard terms
 fixed, filler and false starts gone, and only the final version kept when you
@@ -258,7 +269,8 @@ website/               phonon.sh
 ## License
 
 Phonon source is GPL-3.0. Model weights are downloaded, not stored in this
-repository, and keep their own licenses: Parakeet is CC-BY-4.0, and the Phonon
-refiner, as a derivative of LFM3, is under the LFM Open License v1.0, which
-allows commercial use only for organizations under $10M in annual revenue. See
+repository, and keep their own licenses: Parakeet is CC-BY-4.0, Gemma 4 E2B is
+Apache-2.0, and the Phonon refiner, as a derivative of LFM3, is under the LFM
+Open License v1.0, which allows commercial use only for organizations under
+$10M in annual revenue. See
 [THIRD_PARTY.md](THIRD_PARTY.md).
