@@ -321,6 +321,167 @@ impl SessionDictionary {
     }
 }
 
+/// How long a dictation pasted into a session waits for the message the speaker sends.
+pub const SEND_WAIT: Duration = Duration::from_secs(10 * 60);
+/// Share of the pasted words a sent message must contain to be that dictation, edited.
+const SENT_OVERLAP: f64 = 0.5;
+
+/// A dictation pasted into an AI coding session, waiting for the speaker to send it. The
+/// session transcript then holds the message as sent, after any fixes: the edit Phonon cannot
+/// read from a terminal's screen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingSend {
+    /// The dictation's request id (its recording and the bar's suggestion queue use it).
+    pub id: String,
+    pub pasted: String,
+    pub session: PathBuf,
+    /// Session transcript length when the dictation was pasted: the send comes after it.
+    pub offset: u64,
+    pub since: SystemTime,
+    /// Local history is on: keep the edit in the recording.
+    pub record: bool,
+}
+
+/// Dictations waiting for their send, one per session (the latest: a later pass of the same
+/// dictation replaces an earlier one).
+#[derive(Debug, Default)]
+pub struct PendingSends {
+    pending: Vec<PendingSend>,
+    /// (session, length) last read, so an unchanged transcript is not read again.
+    read_at: Vec<(PathBuf, u64)>,
+}
+
+impl PendingSends {
+    pub fn add(&mut self, send: PendingSend) {
+        self.pending.retain(|other| other.session != send.session);
+        self.pending.push(send);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Each waiting dictation whose send has appeared, with the message as sent; dictations
+    /// whose next message is something else, or that waited too long, are dropped.
+    pub fn take_sent(&mut self, now: SystemTime) -> Vec<(PendingSend, String)> {
+        let mut sent = Vec::new();
+        let mut keep = Vec::new();
+        for send in std::mem::take(&mut self.pending) {
+            let expired = now
+                .duration_since(send.since)
+                .is_ok_and(|waited| waited > SEND_WAIT);
+            let length = fs::metadata(&send.session).map(|meta| meta.len()).unwrap_or(0);
+            let unchanged = self
+                .read_at
+                .iter()
+                .any(|(path, read)| *path == send.session && *read == length);
+            if unchanged || length <= send.offset {
+                if !expired {
+                    keep.push(send);
+                }
+                continue;
+            }
+            self.read_at.retain(|(path, _)| *path != send.session);
+            self.read_at.push((send.session.clone(), length));
+            let (messages, _) = user_messages_since(&send.session, send.offset);
+            match messages.first() {
+                Some(message) if is_sent_version(&send.pasted, message) => {
+                    let message = message.clone();
+                    sent.push((send, message));
+                }
+                Some(_) => {} // the next message is something else: the dictation was not sent
+                None if !expired => keep.push(send),
+                None => {}
+            }
+        }
+        self.pending = keep;
+        sent
+    }
+}
+
+/// The messages the user sent in a Claude Code or Codex transcript after byte `offset`
+/// (complete lines only), and the offset after the last complete line.
+pub fn user_messages_since(path: &Path, offset: u64) -> (Vec<String>, u64) {
+    let Ok(mut file) = fs::File::open(path) else {
+        return (Vec::new(), offset);
+    };
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return (Vec::new(), offset);
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return (Vec::new(), offset);
+    }
+    let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |end| end + 1);
+    let text = String::from_utf8_lossy(&bytes[..complete]);
+    let messages = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|record| user_message(&record))
+        .collect();
+    (messages, offset + complete as u64)
+}
+
+/// The text of a message the user typed or dictated, if this record is one. Claude Code
+/// writes a prompt as a `user` record with string content, and one sent while the agent works
+/// as a `queue-operation` enqueue; Codex as a user `message` response item. Injected context
+/// (`<environment_context>`, `<command-name>` and the like) is not the user's.
+fn user_message(record: &serde_json::Value) -> Option<String> {
+    let kind = record.get("type").and_then(|kind| kind.as_str())?;
+    let text = match kind {
+        "user" => record.get("message")?.get("content")?.as_str()?.to_string(),
+        "queue-operation" => {
+            if record.get("operation").and_then(|op| op.as_str()) != Some("enqueue") {
+                return None;
+            }
+            record.get("content")?.as_str()?.to_string()
+        }
+        "response_item" => {
+            let payload = record.get("payload")?;
+            if payload.get("type").and_then(|t| t.as_str()) != Some("message")
+                || payload.get("role").and_then(|r| r.as_str()) != Some("user")
+            {
+                return None;
+            }
+            payload
+                .get("content")?
+                .as_array()?
+                .iter()
+                .filter(|item| item.get("type").and_then(|t| t.as_str()) == Some("input_text"))
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => return None,
+    };
+    let text = text.trim();
+    (!text.is_empty() && !text.starts_with('<')).then(|| text.to_string())
+}
+
+/// Whether `message` is the pasted dictation as sent: it holds at least half of its words.
+fn is_sent_version(pasted: &str, message: &str) -> bool {
+    let pasted = crate::data::normalize(pasted);
+    let pasted: Vec<&str> = pasted.split_whitespace().collect();
+    if pasted.is_empty() {
+        return false;
+    }
+    let message = crate::data::normalize(message);
+    let mut available: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for word in message.split_whitespace() {
+        *available.entry(word).or_default() += 1;
+    }
+    let mut found = 0;
+    for word in &pasted {
+        if let Some(count) = available.get_mut(word) {
+            if *count > 0 {
+                *count -= 1;
+                found += 1;
+            }
+        }
+    }
+    found as f64 / pasted.len() as f64 >= SENT_OVERLAP
+}
+
 fn token_forms(token: &str) -> Vec<String> {
     if token.contains("://") || token.starts_with("www.") {
         return Vec::new();
@@ -605,6 +766,61 @@ mod tests {
     }
 
     #[test]
+    fn a_pasted_dictation_is_matched_to_the_message_sent() {
+        let dir = std::env::temp_dir().join(format!("phonon-send-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("s.jsonl");
+        fs::write(&session, "{\"type\":\"user\",\"message\":{\"content\":\"earlier\"}}\n").unwrap();
+        let offset = fs::metadata(&session).unwrap().len();
+        let now = SystemTime::now();
+        let mut sends = PendingSends::default();
+        sends.add(PendingSend {
+            id: "p1".into(),
+            pasted: "make the edit corrections work in clawed code and codex".into(),
+            session: session.clone(),
+            offset,
+            since: now,
+            record: true,
+        });
+        assert!(sends.take_sent(now).is_empty(), "nothing sent yet");
+        let mut file = fs::OpenOptions::new().append(true).open(&session).unwrap();
+        use std::io::Write;
+        // the agent's own lines, then the user's fixed message
+        writeln!(file, r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"working"}}]}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"user","message":{{"content":"make the edit corrections work in Claude Code and Codex"}}}}"#).unwrap();
+        drop(file);
+        let sent = sends.take_sent(now);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0.id, "p1");
+        assert_eq!(sent[0].1, "make the edit corrections work in Claude Code and Codex");
+        assert!(sends.is_empty(), "matched: no longer waiting");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn queued_and_codex_messages_count_and_injected_context_does_not() {
+        let records = [
+            r#"{"type":"queue-operation","operation":"enqueue","content":"also fix the gemma loader"}"#,
+            r#"{"type":"queue-operation","operation":"remove","content":"also fix the gemma loader"}"#,
+            r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>x</environment_context>"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"rerun the token cache tests"}]}}"#,
+        ];
+        let messages: Vec<String> = records
+            .iter()
+            .filter_map(|line| user_message(&serde_json::from_str(line).unwrap()))
+            .collect();
+        assert_eq!(messages, vec!["also fix the gemma loader", "rerun the token cache tests"]);
+    }
+
+    #[test]
+    fn a_different_next_message_drops_the_dictation() {
+        assert!(is_sent_version("rename the draft proposer", "rename the DraftProposer"));
+        assert!(!is_sent_version("rename the draft proposer", "never mind, let's eat"));
+    }
+
+    #[test]
     fn the_session_dictionary_is_read_again_only_when_the_session_changes() {
         let home = std::env::temp_dir().join(format!("phonon-dict-{}", std::process::id()));
         let project = home.join(".claude/projects/-x");
@@ -637,5 +853,22 @@ mod tests {
         let later = now + Duration::from_secs(3600);
         assert!(dictionary.terms(&home, "call save checkpoint", later).is_empty());
         fs::remove_dir_all(&home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
+    #[test]
+    fn a_fix_made_before_sending_becomes_a_term_suggestion() {
+        let request = crate::edits::ObservedEdit {
+            pasted: "Let's make the edit corrections work in clawed code and codex.".into(),
+            edited: "Let's make the edit corrections work in Claude Code and Codex.".into(),
+            end_reason: "session_message".into(),
+            ..Default::default()
+        };
+        let analysis = request.analyze(&crate::data::DictionaryFile::default());
+        let event = crate::edits::observed_event(Some("p1"), &analysis, false);
+        let text = event.to_string();
+        assert!(text.contains("Claude Code"), "{text}");
     }
 }

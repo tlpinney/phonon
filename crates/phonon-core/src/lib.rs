@@ -56,6 +56,9 @@ const STARTUP_LLM_TEXT: &str = "Do you know the difference between Koo Bloss and
 
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
+    /// An edit result found without the bar watching a field (a dictation sent in an AI
+    /// coding session): the same `result`/`edit` line `edit_observed` answers with.
+    Edit(serde_json::Value),
     Stream {
         name: String,
         state: String,
@@ -149,6 +152,9 @@ pub struct Engine {
     /// The session dictionary (settings.json `session_context`): terms of the AI coding
     /// session being dictated into, rebuilt when that session's transcript changes.
     session_dictionary: session_context::SessionDictionary,
+    /// Dictations pasted into an AI coding session, waiting for the message the speaker
+    /// sends: edit learning for terminals, whose fields Accessibility cannot read.
+    pending_sends: session_context::PendingSends,
 }
 
 /// Words a recognizer must produce for a clip the energy gate called silent to go out anyway.
@@ -264,6 +270,7 @@ impl Engine {
             stream_commit_category: None,
             live_text_stream: None,
             session_dictionary: session_context::SessionDictionary::default(),
+            pending_sends: session_context::PendingSends::default(),
         })
     }
 
@@ -282,6 +289,7 @@ impl Engine {
 
     pub fn poll(&mut self) -> Vec<EngineEvent> {
         let mut out = std::mem::take(&mut self.pending_events);
+        self.poll_session_sends(&mut out);
         for event in self.asr.poll() {
             match event {
                 AsrEvent::Status { pct, msg } => out.push(EngineEvent::Stream {
@@ -533,6 +541,7 @@ impl Engine {
                                 &request.style,
                             );
                             let app_category = request.app.as_ref().map(|app| app.category);
+                            let keep = request.keep_context;
                             if app_category == Some(app_context::AppCategory::Email) {
                                 corrected.text = app_context::email_layout(&corrected.text);
                             }
@@ -562,6 +571,14 @@ impl Engine {
                                     });
                                 }
                             }
+                            await_session_send(
+                                &mut self.pending_sends,
+                                &mut self.styles,
+                                id.as_deref(),
+                                &corrected.text,
+                                app_category,
+                                keep,
+                            );
                             out.push(EngineEvent::PolishResult {
                                 id,
                                 text: corrected.text,
@@ -1081,6 +1098,31 @@ impl Engine {
         Ok(edits::observed_event(id, &analysis, recorded))
     }
 
+    /// Dictations whose message has been sent: analyze pasted against sent as an observed
+    /// edit, so a fixed term becomes a dictionary suggestion and, with local history on, the
+    /// recording keeps the edit.
+    fn poll_session_sends(&mut self, out: &mut Vec<EngineEvent>) {
+        if self.pending_sends.is_empty() {
+            return;
+        }
+        for (send, message) in self.pending_sends.take_sent(std::time::SystemTime::now()) {
+            let request = edits::ObservedEdit {
+                pasted: send.pasted,
+                edited: message,
+                end_reason: "session_message".into(),
+                record: send.record,
+                ..edits::ObservedEdit::default()
+            };
+            match self.edit_observed(Some(&send.id), &request) {
+                Ok(event) => out.push(EngineEvent::Edit(event)),
+                Err(error) => out.push(EngineEvent::Error {
+                    id: Some(send.id),
+                    msg: format!("session edit: {error:#}"),
+                }),
+            }
+        }
+    }
+
     pub fn edit_decision(&self, id: Option<&str>, index: usize, decision: &str) -> Result<bool> {
         match self.recording_metadata_path(id) {
             Some(path) => edits::write_decision(&path, index, decision),
@@ -1094,6 +1136,44 @@ impl Engine {
             polisher.shutdown();
         }
     }
+}
+
+/// After a dictation into a terminal, editor or AI app with session context on: wait for the
+/// session's next user message, the dictation as sent (`Engine::poll_session_sends`).
+fn await_session_send(
+    pending: &mut session_context::PendingSends,
+    settings: &mut app_context::StylePreferenceCache,
+    id: Option<&str>,
+    pasted: &str,
+    category: Option<app_context::AppCategory>,
+    record: bool,
+) {
+    let coding = matches!(
+        category,
+        Some(app_context::AppCategory::Code | app_context::AppCategory::AiPrompt)
+    );
+    let (Some(id), true) = (id, coding) else { return };
+    if pasted.trim().is_empty() || !settings.session_context() {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    let Some(session) =
+        session_context::active_session(&home, now, session_context::MAX_SESSION_AGE)
+    else {
+        return;
+    };
+    let offset = std::fs::metadata(&session).map(|meta| meta.len()).unwrap_or(0);
+    pending.add(session_context::PendingSend {
+        id: id.to_string(),
+        pasted: pasted.to_string(),
+        session,
+        offset,
+        since: now,
+        record,
+    });
 }
 
 fn update_recording_raw(recording_id: &str, raw_text: &str) -> Result<()> {
@@ -1532,6 +1612,7 @@ fn emit(v: &serde_json::Value) {
 
 fn emit_engine_event(ev: &EngineEvent) {
     match ev {
+        EngineEvent::Edit(event) => emit(event),
         EngineEvent::Stream {
             name,
             state,
