@@ -450,6 +450,9 @@ pub struct StylePreferenceCache {
     /// `prompt_lookup` from the same file (Settings > Advanced): prompt-lookup drafts for
     /// the prompted correction model. On when absent.
     prompt_lookup: bool,
+    /// `session_context` from the same file (Settings > Privacy): read the AI coding session
+    /// being dictated into for spelling. Off when absent.
+    session_context: bool,
     /// Successful parses (for tests and diagnostics).
     pub loads: usize,
     /// File reads and parse attempts (for tests and diagnostics).
@@ -476,6 +479,12 @@ impl StylePreferenceCache {
     pub fn prompt_lookup(&mut self) -> bool {
         self.refresh();
         self.prompt_lookup
+    }
+
+    /// settings.json `session_context` as the file says now; false when absent.
+    pub fn session_context(&mut self) -> bool {
+        self.refresh();
+        self.session_context
     }
 
     pub fn styles_for(&mut self, category: AppCategory) -> Vec<String> {
@@ -515,6 +524,7 @@ impl StylePreferenceCache {
             self.live_text = false;
             self.writing_mode = None;
             self.prompt_lookup = true;
+            self.session_context = false;
             return;
         };
         let stamp = Some((meta.modified().ok(), meta.len()));
@@ -563,6 +573,11 @@ impl StylePreferenceCache {
                     .get("prompt_lookup")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
+                self.session_context = settings
+                    .extra
+                    .get("session_context")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 self.content = Some(hash);
                 self.failed = None;
             }
@@ -965,8 +980,13 @@ mod tests {
         assert!(!cache.prompt_lookup(), "flipped off: the next dictation decodes plainly");
         std::fs::write(&path, r#"{"schema_version":2,"prompt_lookup":true}"#).unwrap();
         assert!(cache.prompt_lookup());
+        // session context: off when absent
+        assert!(!cache.session_context());
+        std::fs::write(&path, r#"{"schema_version":2,"session_context":true}"#).unwrap();
+        assert!(cache.session_context(), "flipped on: the next dictation reads the session");
         std::fs::remove_file(&path).unwrap();
         assert!(cache.prompt_lookup(), "no file: the default");
+        assert!(!cache.session_context(), "no file: off");
         assert_eq!(cache.writing_mode(), None);
         assert!(cache.styles_for(AppCategory::Chat).is_empty());
         assert!(!cache.live_text(), "no file: the default");

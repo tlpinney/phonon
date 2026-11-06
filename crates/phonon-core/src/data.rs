@@ -179,8 +179,28 @@ impl DictionaryFile {
     }
 
     pub fn prepare_polish_input_with_context(&self, transcript: &str, screen_text: &str) -> String {
+        self.prepare_polish_input_with_session(transcript, screen_text, &[])
+    }
+
+    /// The envelope with the session dictionary too: `session_terms`, the terms of the AI
+    /// coding session the speaker is dictating into that the transcript plausibly says
+    /// (`session_context`). The line is present only when there are some, so an envelope
+    /// without them is the same as before; with them, an empty dictionary still gets one.
+    pub fn prepare_polish_input_with_session(
+        &self,
+        transcript: &str,
+        screen_text: &str,
+        session_terms: &[String],
+    ) -> String {
         if self.entries.is_empty() {
-            return transcript.to_string();
+            if session_terms.is_empty() {
+                return transcript.to_string();
+            }
+            return format!(
+                "<phonon_dictionary>\ncanonical_terms: \nlikely_terms: \nscreen_confirmed_terms: \nsession_terms: {}\nphonetic_matches: \nexact_replacements: \n</phonon_dictionary>\n<transcript>\n{}\n</transcript>",
+                session_terms.join(", "),
+                transcript.trim()
+            );
         }
         let likely_entries = self.relevant_entries(transcript);
         let normalized_screen = normalize(screen_text);
@@ -218,11 +238,17 @@ impl DictionaryFile {
             .iter()
             .map(|(spoken, canonical)| format!("{spoken} => {canonical}"))
             .collect::<Vec<_>>();
+        let session_line = if session_terms.is_empty() {
+            String::new()
+        } else {
+            format!("session_terms: {}\n", session_terms.join(", "))
+        };
         format!(
-            "<phonon_dictionary>\ncanonical_terms: {}\nlikely_terms: {}\nscreen_confirmed_terms: {}\nphonetic_matches: {}\nexact_replacements: {}\n</phonon_dictionary>\n<transcript>\n{}\n</transcript>",
+            "<phonon_dictionary>\ncanonical_terms: {}\nlikely_terms: {}\nscreen_confirmed_terms: {}\n{}phonetic_matches: {}\nexact_replacements: {}\n</phonon_dictionary>\n<transcript>\n{}\n</transcript>",
             terms.join(", "),
             likely_terms.join(", "),
             screen_terms.join(", "),
+            session_line,
             phonetic_matches.join("; "),
             replacements.join("; "),
             pre_corrected.trim()
@@ -433,6 +459,13 @@ pub struct RecordingMetadata {
     pub dictionary_corrections: Vec<AppliedCorrection>,
     #[serde(default)]
     pub screen_context_terms: Vec<String>,
+    /// Terms of the AI coding session dictated into that went to the correction model
+    /// (`session_context`), and the session dictionary file they came from, under
+    /// `session-dictionaries/`. Kept only with local history on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_terms: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_dictionary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmMetadata>,
     /// What the user changed after insertion; see `edits::UserEditRecord`.
@@ -465,6 +498,8 @@ impl RecordingMetadata {
             intended_transcript: None,
             dictionary_corrections: Vec::new(),
             screen_context_terms: Vec::new(),
+            session_terms: Vec::new(),
+            session_dictionary: None,
             llm: None,
             user_edit: None,
             app_context: None,
@@ -942,7 +977,7 @@ fn contains_phrase(text: &str, phrase: &str) -> bool {
     format!(" {text} ").contains(&format!(" {phrase} "))
 }
 
-fn plausibly_same_word(left: &str, right: &str) -> bool {
+pub(crate) fn plausibly_same_word(left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }
@@ -1123,7 +1158,7 @@ pub(crate) fn phonetic_key(value: &str) -> String {
 /// this match can tolerate a wider ASR miss than global dictionary retrieval.
 /// It remains bounded to nearby transcript word windows and never activates a
 /// term that is absent from the screen.
-fn contextually_similar_phrase(transcript: &str, form: &str) -> bool {
+pub(crate) fn contextually_similar_phrase(transcript: &str, form: &str) -> bool {
     let transcript = normalize(transcript);
     let form = normalize(form);
     if transcript.is_empty() || form.is_empty() {

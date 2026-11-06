@@ -91,6 +91,7 @@ REFINER_VOCAB_PREFIX = "Vocabulary the speaker may use: "
 # contribute the canonical side.
 REFINER_VOCAB_LINES = (
     ("screen_confirmed_terms", False),
+    ("session_terms", False),
     ("phonetic_matches", True),
     ("exact_replacements", True),
     ("likely_terms", False),

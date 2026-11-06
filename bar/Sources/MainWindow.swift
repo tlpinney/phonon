@@ -1183,6 +1183,13 @@ struct SettingsView: View {
                     + "that are on screen. Screenshots are never saved."
             ) { toggle(\.screenContext) }
             SettingRow(
+                "Use the AI coding session for spelling",
+                help: "When you dictate into a terminal or AI app, read the Claude Code or Codex "
+                    + "session you are in for its file names and identifiers, and spell them "
+                    + "as written there. Read on this Mac only. With local history on, each "
+                    + "session's terms are kept for training."
+            ) { toggle(\.sessionContext) }
+            SettingRow(
                 "Text around the cursor",
                 help: "Give the local correction model the text before and after the cursor."
             ) { toggle(\.textboxContext) }

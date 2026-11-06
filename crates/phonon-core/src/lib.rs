@@ -31,6 +31,7 @@ pub mod data;
 pub mod edits;
 pub mod pairs;
 mod paths;
+pub mod session_context;
 
 use anyhow::{bail, Context, Result};
 pub use paths::project_root;
@@ -145,6 +146,9 @@ pub struct Engine {
     /// `live_text` as of its `stream_start` (re-read only when the file changed), so a
     /// flipped setting applies from the next dictation without an engine restart.
     live_text_stream: Option<String>,
+    /// The session dictionary (settings.json `session_context`): terms of the AI coding
+    /// session being dictated into, rebuilt when that session's transcript changes.
+    session_dictionary: session_context::SessionDictionary,
 }
 
 /// Words a recognizer must produce for a clip the energy gate called silent to go out anyway.
@@ -188,6 +192,9 @@ struct PolishRequest {
     id: Option<String>,
     source_text: String,
     screen_context_terms: Vec<String>,
+    /// The session dictionary's terms sent with this request, and its file name when saved.
+    session_terms: Vec<String>,
+    session_dictionary: Option<String>,
     /// Where the dictation goes, for the corpus and the reply to the bar.
     app: Option<app_context::AppContext>,
     /// Style preferences the user approved for that app's category.
@@ -256,6 +263,7 @@ impl Engine {
             stream_category: None,
             stream_commit_category: None,
             live_text_stream: None,
+            session_dictionary: session_context::SessionDictionary::default(),
         })
     }
 
@@ -537,6 +545,9 @@ impl Engine {
                                     &corrected.text,
                                     corrected.applied.clone(),
                                     request.screen_context_terms,
+                                    request
+                                        .keep_context
+                                        .then_some((request.session_terms, request.session_dictionary)),
                                     data::LlmMetadata {
                                         latency_ms,
                                         ttft_ms,
@@ -899,17 +910,57 @@ impl Engine {
 
     /// The dictionary envelope for a polish: the open stream's last one when the transcript
     /// and screen text are the same, else built now.
-    fn polish_envelope(&self, text: &str, screen_text: &str) -> String {
+    fn polish_envelope(&self, text: &str, screen_text: &str, session_terms: &[String]) -> String {
         match &self.stream_envelope {
             Some((last_text, last_screen, input))
-                if last_text == text && last_screen == screen_text =>
+                if last_text == text && last_screen == screen_text && session_terms.is_empty() =>
             {
                 input.clone()
             }
             _ => self
                 .dictionary
-                .prepare_polish_input_with_context(text, screen_text),
+                .prepare_polish_input_with_session(text, screen_text, session_terms),
         }
+    }
+
+    /// The session dictionary's terms for a dictation into a terminal, editor or AI prompt
+    /// box, when settings.json `session_context` is on; with local history on, the session
+    /// dictionary is saved under `session-dictionaries/` and its file name returned too.
+    fn session_terms(
+        &mut self,
+        text: &str,
+        app: Option<&app_context::AppContext>,
+        keep_context: bool,
+    ) -> (Vec<String>, Option<String>) {
+        let coding = app.is_some_and(|app| {
+            matches!(
+                app.category,
+                app_context::AppCategory::Code | app_context::AppCategory::AiPrompt
+            )
+        });
+        if !coding || !self.styles.session_context() {
+            return (Vec::new(), None);
+        }
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return (Vec::new(), None);
+        };
+        let terms = self
+            .session_dictionary
+            .terms(&home, text, std::time::SystemTime::now());
+        let saved = if keep_context {
+            data::app_support_dir()
+                .ok()
+                .and_then(|dir| {
+                    self.session_dictionary
+                        .save(&dir.join("session-dictionaries"))
+                        .map_err(|error| eprintln!("phonon engine: session dictionary: {error:#}"))
+                        .ok()
+                })
+                .flatten()
+        } else {
+            None
+        };
+        (terms, saved)
     }
 
     pub fn stream_chunk(&mut self, pcm16: &str, id: Option<&str>) -> Result<()> {
@@ -954,8 +1005,9 @@ impl Engine {
         if !self.llm_ready {
             bail!("the correction model is not ready yet");
         }
-        let input = self.polish_envelope(text, screen_text);
         let app = app.and_then(app_context::AppContext::from_request);
+        let (session_terms, session_dictionary) = self.session_terms(text, app.as_ref(), keep_context);
+        let input = self.polish_envelope(text, screen_text, &session_terms);
         // Re-parsed only when settings.json changes, so an approval applies
         // to the very next dictation without a read per preview.
         let style = match app.as_ref() {
@@ -974,6 +1026,8 @@ impl Engine {
             id: id.map(str::to_string),
             source_text: text.to_string(),
             screen_context_terms: self.dictionary.screen_confirmed_terms(text, screen_text),
+            session_terms,
+            session_dictionary,
             app,
             style,
             textbox,
@@ -1053,6 +1107,7 @@ fn update_recording_final(
     final_text: &str,
     corrections: Vec<data::AppliedCorrection>,
     screen_context_terms: Vec<String>,
+    session: Option<(Vec<String>, Option<String>)>,
     llm: data::LlmMetadata,
     app: Option<app_context::AppContext>,
     textbox: Option<app_context::TextboxContext>,
@@ -1061,6 +1116,10 @@ fn update_recording_final(
     recording.final_transcript = final_text.trim().to_string();
     recording.dictionary_corrections = corrections;
     recording.screen_context_terms = screen_context_terms;
+    if let Some((terms, dictionary)) = session {
+        recording.session_terms = terms;
+        recording.session_dictionary = dictionary;
+    }
     recording.llm = Some(llm);
     if app.is_some() {
         recording.app_context = app;

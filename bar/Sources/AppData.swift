@@ -68,6 +68,10 @@ struct NativeSettings: Codable, Equatable {
     /// correction model (Gemma). Same text, faster on long dictations. The engine reads it
     /// from settings.json for every request. On by default.
     var promptLookup: Bool
+    /// Settings > Privacy > Use the AI coding session for spelling: read the Claude Code or
+    /// Codex session being dictated into for its file names and identifiers. The engine
+    /// reads it from settings.json for every request. Off by default.
+    var sessionContext: Bool
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -97,6 +101,7 @@ struct NativeSettings: Codable, Equatable {
         case showInDock = "show_in_dock"
         case showIdleCapsule = "show_idle_capsule"
         case promptLookup = "prompt_lookup"
+        case sessionContext = "session_context"
     }
 
     init(
@@ -126,7 +131,8 @@ struct NativeSettings: Codable, Equatable {
         clipboardAfterPaste: ClipboardAfterPaste = .dictation,
         showInDock: Bool = true,
         showIdleCapsule: Bool = true,
-        promptLookup: Bool = true
+        promptLookup: Bool = true,
+        sessionContext: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -155,6 +161,7 @@ struct NativeSettings: Codable, Equatable {
         self.showInDock = showInDock
         self.showIdleCapsule = showIdleCapsule
         self.promptLookup = promptLookup
+        self.sessionContext = sessionContext
     }
 
     init(from decoder: Decoder) throws {
@@ -214,6 +221,8 @@ struct NativeSettings: Codable, Equatable {
         showIdleCapsule =
             try values.decodeIfPresent(Bool.self, forKey: .showIdleCapsule) ?? true
         promptLookup = try values.decodeIfPresent(Bool.self, forKey: .promptLookup) ?? true
+        sessionContext =
+            try values.decodeIfPresent(Bool.self, forKey: .sessionContext) ?? false
     }
 }
 

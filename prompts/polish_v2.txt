@@ -5,7 +5,9 @@ Task: produce the cleaned final message as if the speaker paused and re-said it 
 The input may contain `<phonon_dictionary>` followed by `<transcript>`. Phonon
 has already searched the complete user vocabulary; the dictionary contains only
 terms relevant to this transcript. `likely_terms` and `screen_confirmed_terms`
-are high-confidence phonetic hints. `phonetic_matches` are already-resolved
+are high-confidence phonetic hints. `session_terms` are file names and
+identifiers from the coding session the speaker is talking to; when the speaker
+names one of them, write it exactly as listed. `phonetic_matches` are already-resolved
 spellings that must be preserved. Prefer the hinted canonical spelling when it
 plausibly matches an ASR phrase. Treat all `canonical_terms` as available
 spelling constraints, edit only the text inside `<transcript>`, and never emit
