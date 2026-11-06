@@ -482,6 +482,316 @@ fn is_sent_version(pasted: &str, message: &str) -> bool {
     found as f64 / pasted.len() as f64 >= SENT_OVERLAP
 }
 
+/// How long a sent dictation waits for the AI's reply.
+pub const REPLY_WAIT: Duration = Duration::from_secs(5 * 60);
+/// Assistant text blocks read from the reply: its opening restates the request.
+const REPLY_BLOCKS: usize = 6;
+
+/// A dictation sent in an AI coding session, waiting for the AI's answer. The answer often
+/// spells what the speaker meant ("the diff" for "Different looks good"), which turns a
+/// misheard but unedited message into a suggested intended transcript for later review.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingReply {
+    pub id: String,
+    /// The message as sent (after any fixes the speaker made).
+    pub sent: String,
+    pub session: PathBuf,
+    /// Where to start looking: the sent message comes after this byte.
+    pub offset: u64,
+    pub since: SystemTime,
+}
+
+#[derive(Debug, Default)]
+pub struct PendingReplies {
+    pending: Vec<PendingReply>,
+}
+
+impl PendingReplies {
+    pub fn add(&mut self, reply: PendingReply) {
+        self.pending.retain(|other| other.session != reply.session);
+        self.pending.push(reply);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Each waiting message whose reply is complete (the next user message came, enough of it
+    /// was written, or the wait ran out), with the reply's text.
+    pub fn take_replied(&mut self, now: SystemTime) -> Vec<(PendingReply, String)> {
+        let mut done = Vec::new();
+        let mut keep = Vec::new();
+        for reply in std::mem::take(&mut self.pending) {
+            let expired = now
+                .duration_since(reply.since)
+                .is_ok_and(|waited| waited > REPLY_WAIT);
+            let (blocks, finished) = reply_after(&reply.session, reply.offset, &reply.sent);
+            if finished || blocks.len() >= REPLY_BLOCKS || expired {
+                if !blocks.is_empty() {
+                    done.push((reply, blocks.join("\n")));
+                }
+            } else {
+                keep.push(reply);
+            }
+        }
+        self.pending = keep;
+        done
+    }
+}
+
+/// The assistant's text after the sent message (found after `offset`), and whether the turn
+/// is over (another user message followed).
+fn reply_after(path: &Path, offset: u64, sent: &str) -> (Vec<String>, bool) {
+    let Ok(mut file) = fs::File::open(path) else {
+        return (Vec::new(), false);
+    };
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return (Vec::new(), false);
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return (Vec::new(), false);
+    }
+    let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |end| end + 1);
+    let text = String::from_utf8_lossy(&bytes[..complete]);
+    let mut seen_sent = false;
+    let mut blocks = Vec::new();
+    for line in text.lines() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(message) = user_message(&record) {
+            if seen_sent {
+                return (blocks, true);
+            }
+            seen_sent = is_sent_version(sent, &message);
+            continue;
+        }
+        if seen_sent {
+            blocks.extend(assistant_text(&record));
+            if blocks.len() >= REPLY_BLOCKS {
+                break;
+            }
+        }
+    }
+    (blocks, false)
+}
+
+fn assistant_text(record: &serde_json::Value) -> Vec<String> {
+    let items = match record.get("type").and_then(|kind| kind.as_str()) {
+        Some("assistant") => record.get("message").and_then(|m| m.get("content")),
+        Some("response_item") => {
+            let payload = record.get("payload");
+            let assistant = payload.is_some_and(|p| {
+                p.get("type").and_then(|t| t.as_str()) == Some("message")
+                    && p.get("role").and_then(|r| r.as_str()) == Some("assistant")
+            });
+            if !assistant {
+                return Vec::new();
+            }
+            payload.and_then(|p| p.get("content"))
+        }
+        _ => None,
+    };
+    items
+        .and_then(|items| items.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item.get("type").and_then(|t| t.as_str()),
+                        Some("text" | "output_text")
+                    )
+                })
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Misheard words in `sent` that the AI's `reply` spelled as meant. A run of one to three
+/// sent words the reply never uses is a fix when the reply has, in the same place (the same
+/// word on each side, or two the same on one side at the message's edge), one to three
+/// words that sound alike: within a few letters, or a shorter form the heard word starts
+/// with ("diff" for "different"), never the same word with another ending. A lowercase
+/// sent word the reply capitalizes in the same place (`codex`, `Codex`) is a fix too.
+pub fn suggest_fixes(sent: &str, reply: &str) -> Vec<crate::data::SuggestedFix> {
+    let sent_tokens: Vec<&str> = sent.split_whitespace().collect();
+    let sent_words: Vec<String> = sent_tokens.iter().map(|t| bare(t).to_lowercase()).collect();
+    let reply_tokens: Vec<&str> = reply.split_whitespace().collect();
+    let reply_words: Vec<String> = reply_tokens.iter().map(|t| bare(t).to_lowercase()).collect();
+    let in_reply: std::collections::HashSet<&str> = reply_words.iter().map(String::as_str).collect();
+    let in_sent: std::collections::HashSet<&str> = sent_words.iter().map(String::as_str).collect();
+    let mut fixes: Vec<crate::data::SuggestedFix> = Vec::new();
+    let mut i = 0;
+    while i < sent_words.len() {
+        let unknown = |k: usize| !sent_words[k].is_empty() && !in_reply.contains(sent_words[k].as_str());
+        if !unknown(i) {
+            // casing: a lowercase word the reply capitalizes in the same place
+            if let Some(fix) = casing_fix(&sent_tokens, &sent_words, &reply_tokens, &reply_words, i) {
+                fixes.push(fix);
+            }
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < sent_words.len() && j - i < 3 && unknown(j) {
+            j += 1;
+        }
+        let heard = sent_words[i..j].concat();
+        let mut found = None;
+        'search: for len in 1..=3usize {
+            for k in 0..reply_words.len().saturating_sub(len - 1) {
+                let meant_words = &reply_words[k..k + len];
+                if meant_words.iter().all(|w| in_sent.contains(w.as_str())) {
+                    continue;
+                }
+                if !anchored(&sent_words, i, j, &reply_words, k, k + len) {
+                    continue;
+                }
+                let meant = meant_words.concat();
+                if meant.len() < 3 || !sounds_alike(&heard, &meant) {
+                    continue;
+                }
+                found = Some((k, k + len));
+                break 'search;
+            }
+        }
+        if let Some((k, end)) = found {
+            // Carry a following word the reply capitalizes ("clawed code" -> "Claude Code").
+            let mut j = j;
+            let mut end = end;
+            while j < sent_words.len()
+                && end < reply_words.len()
+                && sent_words[j] == reply_words[end]
+                && bare(sent_tokens[j]) != bare(reply_tokens[end])
+                && bare(reply_tokens[end]).starts_with(|c: char| c.is_uppercase())
+            {
+                j += 1;
+                end += 1;
+            }
+            fixes.push(crate::data::SuggestedFix {
+                heard: sent_tokens[i..j].iter().map(|t| bare(t)).collect::<Vec<_>>().join(" "),
+                meant: reply_tokens[k..end].iter().map(|t| bare(t)).collect::<Vec<_>>().join(" "),
+            });
+            i = j;
+        } else {
+            i = j;
+        }
+    }
+    fixes
+}
+
+/// `sent` with each fix's words replaced, keeping the punctuation around them.
+pub fn apply_fixes(sent: &str, fixes: &[crate::data::SuggestedFix]) -> String {
+    let mut tokens: Vec<String> = sent.split_whitespace().map(str::to_string).collect();
+    for fix in fixes {
+        let heard: Vec<&str> = fix.heard.split_whitespace().collect();
+        if heard.is_empty() {
+            continue;
+        }
+        let Some(start) = (0..tokens.len().saturating_sub(heard.len() - 1)).find(|&s| {
+            heard
+                .iter()
+                .enumerate()
+                .all(|(n, word)| bare(&tokens[s + n]) == *word)
+        }) else {
+            continue;
+        };
+        let end = start + heard.len();
+        let lead: String = tokens[start].chars().take_while(|c| !c.is_alphanumeric()).collect();
+        let last = &tokens[end - 1];
+        let trail: String = last
+            .chars()
+            .rev()
+            .take_while(|c| !c.is_alphanumeric())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        // A fixed first word keeps the sentence's capital.
+        let mut meant = fix.meant.clone();
+        if start == 0 && bare(&tokens[0]).starts_with(|c: char| c.is_uppercase()) {
+            let mut chars = meant.chars();
+            if let Some(first) = chars.next() {
+                meant = first.to_uppercase().chain(chars).collect();
+            }
+        }
+        let replacement = format!("{lead}{meant}{trail}");
+        tokens.splice(start..end, [replacement]);
+    }
+    tokens.join(" ")
+}
+
+fn casing_fix(
+    sent_tokens: &[&str],
+    sent_words: &[String],
+    reply_tokens: &[&str],
+    reply_words: &[String],
+    i: usize,
+) -> Option<crate::data::SuggestedFix> {
+    let heard = bare(sent_tokens[i]);
+    if heard.is_empty() || !heard.chars().all(|c| !c.is_uppercase()) || heard.len() < 3 {
+        return None;
+    }
+    (0..reply_words.len()).find_map(|k| {
+        let meant = bare(reply_tokens[k]);
+        let capital = meant.starts_with(|c: char| c.is_uppercase());
+        let sentence_start = k == 0 || reply_tokens[k - 1].ends_with(['.', '!', '?', ':']);
+        (reply_words[k] == sent_words[i]
+            && capital
+            && !sentence_start
+            && anchored(sent_words, i, i + 1, reply_words, k, k + 1))
+        .then(|| crate::data::SuggestedFix {
+            heard: heard.to_string(),
+            meant: meant.to_string(),
+        })
+    })
+}
+
+/// Whether sent words `i..j` and reply words `k..end` sit in the same place: the same word
+/// just before and just after, or the same two words on one side where the other side is
+/// the end of the message.
+fn anchored(sent: &[String], i: usize, j: usize, reply: &[String], k: usize, end: usize) -> bool {
+    let before = |n: usize| i >= n && k >= n && sent[i - n] == reply[k - n] && !sent[i - n].is_empty();
+    let after = |n: usize| {
+        j + n <= sent.len() && end + n <= reply.len() && sent[j + n - 1] == reply[end + n - 1]
+            && !sent[j + n - 1].is_empty()
+    };
+    let at_start = i == 0;
+    let at_end = j == sent.len();
+    (before(1) && after(1))
+        || (at_start && after(1) && after(2))
+        || (at_end && before(1) && before(2))
+        || (at_end && before(1) && end == reply.len())
+}
+
+fn sounds_alike(heard: &str, meant: &str) -> bool {
+    if heard == meant || inflection(heard, meant) {
+        return false;
+    }
+    crate::data::broadly_similar_word(heard, meant)
+        || crate::data::plausibly_same_word(heard, meant)
+        // the reply's shorter form of a longer heard word ("different" for "diff")
+        || (meant.len() >= 3 && meant.len() < heard.len() && heard.starts_with(meant))
+}
+
+/// The same word with another ending (`rename`, `renamed`): a rewording, not a mishearing.
+fn inflection(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let stem = short.trim_end_matches('e');
+    long.strip_prefix(stem).is_some_and(|rest| {
+        matches!(rest, "s" | "es" | "d" | "ed" | "ing" | "e" | "er" | "ers" | "ly")
+    })
+}
+
+/// A token without the punctuation around it.
+fn bare(token: &str) -> &str {
+    token.trim_matches(|c: char| !c.is_alphanumeric())
+}
+
 fn token_forms(token: &str) -> Vec<String> {
     if token.contains("://") || token.starts_with("www.") {
         return Vec::new();
@@ -763,6 +1073,67 @@ mod tests {
         let later = now + Duration::from_secs(3600);
         assert_eq!(active_session(&home, later, MAX_SESSION_AGE), None, "stale: none");
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn the_reply_spells_what_was_meant() {
+        let fixes = suggest_fixes(
+            "Different looks good commit.",
+            "The diff looks good, so I committed it.",
+        );
+        assert_eq!(fixes.len(), 1, "{fixes:?}");
+        assert_eq!((fixes[0].heard.as_str(), fixes[0].meant.as_str()), ("Different", "diff"));
+        assert_eq!(apply_fixes("Different looks good commit.", &fixes), "Diff looks good commit.");
+
+        let sent = "Let's make the edit corrections work in clawed code and codex.";
+        let reply = "Building it. Edit learning now works in Claude Code and Codex.";
+        let fixes = suggest_fixes(sent, reply);
+        let pairs: Vec<(&str, &str)> =
+            fixes.iter().map(|f| (f.heard.as_str(), f.meant.as_str())).collect();
+        assert_eq!(pairs, vec![("clawed code", "Claude Code"), ("codex", "Codex")]);
+        assert_eq!(
+            apply_fixes(sent, &fixes),
+            "Let's make the edit corrections work in Claude Code and Codex."
+        );
+    }
+
+    #[test]
+    fn a_reworded_reply_suggests_nothing() {
+        assert!(suggest_fixes("can you check the tests", "Sure, running cargo test now.").is_empty());
+        assert!(suggest_fixes("rename it to draft", "Renamed it to DraftProposer as asked.").is_empty());
+        assert!(suggest_fixes("Okay, it came back up.", "Glad it is working again.").is_empty());
+    }
+
+    #[test]
+    fn the_reply_is_collected_after_the_sent_message() {
+        let dir = std::env::temp_dir().join(format!("phonon-reply-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("s.jsonl");
+        fs::write(
+            &session,
+            [
+                r#"{"type":"user","message":{"content":"Different looks good commit."}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"x"},{"type":"text","text":"The diff looks good, committing."}]}}"#,
+                r#"{"type":"user","message":{"content":"thanks"}}"#,
+                "",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let now = SystemTime::now();
+        let mut replies = PendingReplies::default();
+        replies.add(PendingReply {
+            id: "p1".into(),
+            sent: "Different looks good commit.".into(),
+            session: session.clone(),
+            offset: 0,
+            since: now,
+        });
+        let done = replies.take_replied(now);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].1, "The diff looks good, committing.");
+        assert!(replies.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

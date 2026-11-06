@@ -227,6 +227,30 @@ enum CorpusCommands {
         /// The transcript you intended.
         text: String,
     },
+    /// List what you probably meant, found after the fact (the AI's reply spelled it), for
+    /// recordings without an intended transcript yet.
+    Suggestions {
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make a recording's suggestion its intended transcript.
+    AcceptSuggestion {
+        /// Recording id, from `phonon corpus suggestions`.
+        id: String,
+        /// Save this text instead of the suggestion (when the suggestion is close but not right).
+        #[arg(long)]
+        text: Option<String>,
+        /// Also add the suggestion's term fixes to the dictionary, with what was heard as
+        /// their spoken form.
+        #[arg(long)]
+        dictionary: bool,
+    },
+    /// Drop a recording's suggestion.
+    DismissSuggestion {
+        /// Recording id, from `phonon corpus suggestions`.
+        id: String,
+    },
     /// Copy recordings from the old History.json format into the recordings folder.
     #[command(hide = true)]
     MigrateLegacy,
@@ -391,6 +415,13 @@ fn run_corpus(command: CorpusCommands) -> Result<()> {
         CorpusCommands::List { search, json } => data_cmd::list_corpus(search.as_deref(), json),
         CorpusCommands::Show { id } => data_cmd::show_recording(&id),
         CorpusCommands::SetIntended { id, text } => data_cmd::set_intended(&id, &text),
+        CorpusCommands::Suggestions { json } => data_cmd::list_suggestions(json),
+        CorpusCommands::AcceptSuggestion {
+            id,
+            text,
+            dictionary,
+        } => data_cmd::accept_suggestion(&id, text.as_deref(), dictionary),
+        CorpusCommands::DismissSuggestion { id } => data_cmd::dismiss_suggestion(&id),
         CorpusCommands::MigrateLegacy => data_cmd::migrate_legacy_history(),
         CorpusCommands::Delete { id } => data_cmd::delete_corpus_recording(&id),
         CorpusCommands::PolishEval {

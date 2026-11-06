@@ -645,6 +645,94 @@ pub fn set_intended(id: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn list_suggestions(json: bool) -> Result<()> {
+    let pending: Vec<_> = phonon_core::data::list_recordings()?
+        .into_iter()
+        .filter(|recording| {
+            recording.suggested_intended.is_some() && recording.intended_transcript.is_none()
+        })
+        .collect();
+    if json {
+        let rows: Vec<_> = pending
+            .iter()
+            .map(|recording| {
+                serde_json::json!({
+                    "id": recording.id,
+                    "final_transcript": recording.final_transcript,
+                    "suggested_intended": recording.suggested_intended,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if pending.is_empty() {
+        println!("no suggestions to review");
+        return Ok(());
+    }
+    for recording in &pending {
+        let Some(suggestion) = &recording.suggested_intended else { continue };
+        println!("{}", recording.id);
+        println!("  typed:    {}", recording.final_transcript);
+        println!("  meant?    {}", suggestion.text);
+        for fix in &suggestion.fixes {
+            let term = if phonon_core::data::looks_like_term(&fix.meant) { "  (term)" } else { "" };
+            println!("    {} -> {}{term}", fix.heard, fix.meant);
+        }
+    }
+    println!(
+        "\n{} to review: phonon corpus accept-suggestion <id> [--dictionary] [--text ...] \
+         or dismiss-suggestion <id>",
+        pending.len()
+    );
+    Ok(())
+}
+
+pub fn accept_suggestion(id: &str, text: Option<&str>, add_terms: bool) -> Result<()> {
+    let recording = load_recording_by_id(id)?;
+    let Some(suggestion) = recording.suggested_intended.clone() else {
+        bail!("recording {id} has no suggestion");
+    };
+    let intended = text.unwrap_or(&suggestion.text);
+    set_intended_transcript(id, intended)?;
+    println!("{id}: intended transcript saved: {intended}");
+    if add_terms {
+        let terms: Vec<_> = suggestion
+            .fixes
+            .iter()
+            .filter(|fix| phonon_core::data::looks_like_term(&fix.meant))
+            .collect();
+        if terms.is_empty() {
+            println!("no term fixes to add to the dictionary");
+            return Ok(());
+        }
+        let mut dictionary = DictionaryFile::load()?;
+        for fix in &terms {
+            dictionary.merge([DictionaryEntry {
+                phrase: fix.meant.clone(),
+                replacement: None,
+                spoken_forms: vec![fix.heard.to_lowercase()],
+                source: format!("phonon-suggestion:{id}"),
+                starred: true,
+                usage_count: 0,
+            }]);
+            println!("dictionary: {} (heard as {})", fix.meant, fix.heard);
+        }
+        dictionary.save()?;
+    }
+    Ok(())
+}
+
+pub fn dismiss_suggestion(id: &str) -> Result<()> {
+    let mut recording = load_recording_by_id(id)?;
+    if recording.suggested_intended.take().is_none() {
+        bail!("recording {id} has no suggestion");
+    }
+    phonon_core::data::save_recording(&recording)?;
+    println!("{id}: suggestion dismissed");
+    Ok(())
+}
+
 pub fn delete_corpus_recording(id: &str) -> Result<()> {
     delete_recording(id)?;
     println!("deleted recording {id}");

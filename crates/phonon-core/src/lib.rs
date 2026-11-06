@@ -155,6 +155,9 @@ pub struct Engine {
     /// Dictations pasted into an AI coding session, waiting for the message the speaker
     /// sends: edit learning for terminals, whose fields Accessibility cannot read.
     pending_sends: session_context::PendingSends,
+    /// Sent dictations waiting for the AI's reply, which may spell what was meant
+    /// (`suggested_intended`, kept for review). Only with local history on.
+    pending_replies: session_context::PendingReplies,
 }
 
 /// Words a recognizer must produce for a clip the energy gate called silent to go out anyway.
@@ -271,6 +274,7 @@ impl Engine {
             live_text_stream: None,
             session_dictionary: session_context::SessionDictionary::default(),
             pending_sends: session_context::PendingSends::default(),
+            pending_replies: session_context::PendingReplies::default(),
         })
     }
 
@@ -1102,10 +1106,21 @@ impl Engine {
     /// edit, so a fixed term becomes a dictionary suggestion and, with local history on, the
     /// recording keeps the edit.
     fn poll_session_sends(&mut self, out: &mut Vec<EngineEvent>) {
+        self.poll_session_replies(out);
         if self.pending_sends.is_empty() {
             return;
         }
-        for (send, message) in self.pending_sends.take_sent(std::time::SystemTime::now()) {
+        let now = std::time::SystemTime::now();
+        for (send, message) in self.pending_sends.take_sent(now) {
+            if send.record {
+                self.pending_replies.add(session_context::PendingReply {
+                    id: send.id.clone(),
+                    sent: message.clone(),
+                    session: send.session.clone(),
+                    offset: send.offset,
+                    since: now,
+                });
+            }
             let request = edits::ObservedEdit {
                 pasted: send.pasted,
                 edited: message,
@@ -1119,6 +1134,39 @@ impl Engine {
                     id: Some(send.id),
                     msg: format!("session edit: {error:#}"),
                 }),
+            }
+        }
+    }
+
+    /// Replies that have come in: keep what they suggest the speaker meant in the recording,
+    /// for review. Nothing is applied to the dictionary or the intended transcript.
+    fn poll_session_replies(&mut self, out: &mut Vec<EngineEvent>) {
+        if self.pending_replies.is_empty() {
+            return;
+        }
+        for (reply, text) in self.pending_replies.take_replied(std::time::SystemTime::now()) {
+            let fixes = session_context::suggest_fixes(&reply.sent, &text);
+            if fixes.is_empty() {
+                continue;
+            }
+            let Some(recording_id) = self.recording_ids.get(&reply.id).cloned() else {
+                continue;
+            };
+            let suggestion = data::SuggestedIntended {
+                text: session_context::apply_fixes(&reply.sent, &fixes),
+                fixes,
+                source: "assistant_reply".into(),
+                created_at_unix_ms: data::now_unix_ms(),
+            };
+            let saved = data::load_recording_by_id(&recording_id).and_then(|mut recording| {
+                recording.suggested_intended = Some(suggestion);
+                data::save_recording(&recording)
+            });
+            if let Err(error) = saved {
+                out.push(EngineEvent::Error {
+                    id: Some(reply.id),
+                    msg: format!("suggested intended: {error:#}"),
+                });
             }
         }
     }

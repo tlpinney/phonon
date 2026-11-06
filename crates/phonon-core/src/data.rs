@@ -414,6 +414,26 @@ impl DictionaryFile {
     }
 }
 
+/// What the speaker probably meant, inferred after the fact and kept for review, never
+/// applied by itself: `phonon corpus suggestions` lists it, `accept-suggestion` makes it the
+/// intended transcript (and its term fixes dictionary entries).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SuggestedIntended {
+    /// The message as sent with the fixes applied.
+    pub text: String,
+    pub fixes: Vec<SuggestedFix>,
+    /// Where the fixes came from: `assistant_reply`, the AI coding session's answer, which
+    /// spelled the misheard words the way the speaker meant them.
+    pub source: String,
+    pub created_at_unix_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SuggestedFix {
+    pub heard: String,
+    pub meant: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppliedCorrection {
     pub from: String,
@@ -466,6 +486,9 @@ pub struct RecordingMetadata {
     pub session_terms: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_dictionary: Option<String>,
+    /// What the speaker probably meant, for review (`SuggestedIntended`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_intended: Option<SuggestedIntended>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmMetadata>,
     /// What the user changed after insertion; see `edits::UserEditRecord`.
@@ -500,6 +523,7 @@ impl RecordingMetadata {
             screen_context_terms: Vec::new(),
             session_terms: Vec::new(),
             session_dictionary: None,
+            suggested_intended: None,
             llm: None,
             user_edit: None,
             app_context: None,
@@ -1035,6 +1059,12 @@ pub(crate) fn is_proper_name(word: &str) -> bool {
 
 /// Whether every word of `phrase` is ordinary English, allowing for the common
 /// inflections the base word list omits.
+/// Whether a phrase is worth a dictionary entry: not ordinary English (which the recognizer
+/// already spells right).
+pub fn looks_like_term(phrase: &str) -> bool {
+    !phrase.trim().is_empty() && !is_ordinary_english(&phrase.to_lowercase())
+}
+
 pub(crate) fn is_ordinary_english(phrase: &str) -> bool {
     let words = english_words();
     if words.is_empty() {
@@ -1183,7 +1213,7 @@ pub(crate) fn contextually_similar_phrase(transcript: &str, form: &str) -> bool 
     false
 }
 
-fn broadly_similar_word(left: &str, right: &str) -> bool {
+pub(crate) fn broadly_similar_word(left: &str, right: &str) -> bool {
     let longest = left.chars().count().max(right.chars().count());
     if longest < 5 {
         return false;
@@ -1267,7 +1297,7 @@ pub(crate) fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(
     Ok(())
 }
 
-fn now_unix_ms() -> u128 {
+pub(crate) fn now_unix_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
