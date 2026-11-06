@@ -963,9 +963,12 @@ impl Engine {
             None => Vec::new(),
         };
         let textbox = textbox.and_then(app_context::TextboxContext::from_request);
-        let context = app_context::with_writing_mode(
-            app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
-            self.styles.writing_mode().as_deref(),
+        let context = app_context::with_prompt_lookup(
+            app_context::with_writing_mode(
+                app_context::polish_context(app.as_ref(), &style, textbox.as_ref()),
+                self.styles.writing_mode().as_deref(),
+            ),
+            self.styles.prompt_lookup(),
         );
         self.polish_requests.push(PolishRequest {
             id: id.map(str::to_string),

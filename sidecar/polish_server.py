@@ -987,6 +987,25 @@ def main() -> None:
         )
         return tokenizer.encode(prompt, add_special_tokens=add_special)
 
+    # Prompt-lookup drafts (prompt_lookup.py) for the prompted polisher on MLX: the transcript
+    # is the draft, the output stays the greedy output. The refiner has its own drafts
+    # (streaming refine, the native engine). PHONON_PROMPT_LOOKUP=0 turns it off.
+    lookup = None
+    if (
+        not refiner
+        and engine is None
+        and os.environ.get("PHONON_PROMPT_LOOKUP", "1") != "0"
+    ):
+        try:  # run as sidecar/polish_server.py (sidecar dir on sys.path) or as a package
+            import prompt_lookup
+        except ImportError:
+            from . import prompt_lookup
+        if prompt_lookup.supported(model):
+            lookup = prompt_lookup
+        else:
+            print("prompt lookup: off, this model's cache cannot be trimmed", file=sys.stderr)
+    eos_ids = set(tokenizer.eos_token_ids)
+
     # Prefix cache. The KV state of the prefix is computed once here; every
     # request deep-copies it (arrays copy in well under a millisecond) and
     # prefills only its own tokens. Gemma 4's sliding-window layers cannot be
@@ -994,7 +1013,9 @@ def main() -> None:
     # a copied snapshot is used instead of mlx-lm's trim path. The last prefix
     # token is left out of the snapshot: the tokenizer may merge it with the
     # first user token, and the request's own tokens are always compared
-    # against the snapshot before it is used.
+    # against the snapshot before it is used. With prompt lookup the snapshot
+    # holds trimmable caches (prompt_lookup.trimmable_cache), which serve the
+    # plain path too.
     prefix_tokens: list[int] = []
     prefix_cache = None
     engine_prefix_tokens = 0
@@ -1009,7 +1030,9 @@ def main() -> None:
     elif not args.no_prefix_cache:
         prefix_tokens = encode_prompt(prompt_prefix)[:-1]
         if prefix_tokens:
-            prefix_cache = make_prompt_cache(model)
+            prefix_cache = (
+                lookup.trimmable_cache(model) if lookup else make_prompt_cache(model)
+            )
             model(mx.array(prefix_tokens)[None], cache=prefix_cache)
             mx.eval([layer.state for layer in prefix_cache])
             print(f"prefix cache: {len(prefix_tokens)} tokens", file=sys.stderr)
@@ -1255,7 +1278,9 @@ def main() -> None:
             },
         }
 
-    def run(text: str, streamed: bool = True, mode: tuple = (None, "")) -> dict:
+    def run(
+        text: str, streamed: bool = True, mode: tuple = (None, ""), drafts: bool = True
+    ) -> dict:
         if streamed and stream is not None and stream.commits:
             return run_streamed(text, mode)
         if engine is not None:
@@ -1278,18 +1303,35 @@ def main() -> None:
         ttft_ms = None
         pieces: list[str] = []
         generated = 0
-        for chunk in stream_generate(
-            model,
-            tokenizer,
-            mx.array(tokens),
-            max_tokens=max_tokens,
-            sampler=sampler,
-            **generate_kwargs,
-        ):
-            if ttft_ms is None:
-                ttft_ms = (time.perf_counter() - started_at) * 1000
-            pieces.append(chunk.text)
-            generated = chunk.generation_tokens
+        passes = None
+        # Drafts only for a transcript long enough to gain from them.
+        draft = drafts and lookup is not None and (
+            len(tokenizer.encode(transcript_payload(text), add_special_tokens=False))
+            >= lookup.MIN_SOURCE_TOKENS
+        )
+        if draft:
+            # The whole user text is the draft source: the transcript, and the
+            # dictionary's spellings for terms the model replaces.
+            source = tokenizer.encode(text, add_special_tokens=False)
+            cache = generate_kwargs.get("prompt_cache") or lookup.trimmable_cache(model)
+            result = lookup.decode(model, tokens, cache, source, max_tokens, eos_ids)
+            ttft_ms = result["ttft"] * 1000
+            pieces.append(tokenizer.decode(result["tokens"]))
+            generated = len(result["tokens"])
+            passes = result["passes"]
+        else:
+            for chunk in stream_generate(
+                model,
+                tokenizer,
+                mx.array(tokens),
+                max_tokens=max_tokens,
+                sampler=sampler,
+                **generate_kwargs,
+            ):
+                if ttft_ms is None:
+                    ttft_ms = (time.perf_counter() - started_at) * 1000
+                pieces.append(chunk.text)
+                generated = chunk.generation_tokens
         latency_ms = (time.perf_counter() - started_at) * 1000
         output = clean_output("".join(pieces))
         guard_fired = False
@@ -1308,6 +1350,8 @@ def main() -> None:
                     generated / (latency_ms / 1000) if latency_ms > 0 else 0.0
                 ),
                 "generatedTokenCount": generated,
+                # forward passes after the prefill with prompt-lookup drafts (None: one per token)
+                "forwardPasses": passes,
                 "inputCharacterCount": len(text),
                 "outputCharacterCount": len(output),
                 "maxOutputTokenBudget": max_tokens,
@@ -1339,6 +1383,8 @@ def main() -> None:
         ready_message += f"; {describe_profile(profile_report)}"
     if prefix_cache is not None:
         ready_message += f"; prefix cache {len(prefix_tokens)} tokens"
+    if lookup is not None:
+        ready_message += "; prompt-lookup drafts"
     if stream is not None:
         ready_message += "; streaming refine"
 
@@ -1384,8 +1430,11 @@ def main() -> None:
                 emit({"ok": False, "error": "empty inputText"})
                 return True
             mode = writing_mode(mode_lines, mode_table, request.get("context"))
+            context = request.get("context")
+            # Settings > Advanced: "prompt_lookup": false turns the drafts off for this request.
+            drafts = not (isinstance(context, dict) and context.get("prompt_lookup") is False)
             try:
-                emit(run(text, mode=mode))
+                emit(run(text, mode=mode, drafts=drafts))
             except Exception as error:  # noqa: BLE001
                 stream_reset(lost=True)
                 emit({"ok": False, "error": f"correction failed: {error}"})

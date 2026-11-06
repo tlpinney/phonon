@@ -1152,6 +1152,12 @@ struct SettingsView: View {
             }
             LearnedStylesList(store: store, onChanged: onSettingsChanged)
             SettingRow(
+                "Fast correction",
+                help: "Draft the corrected text from what you said and let the model check "
+                    + "it, instead of writing it word by word. Same text, faster on long "
+                    + "dictations. Gemma only. Applies from the next dictation."
+            ) { toggle(\.promptLookup) }
+            SettingRow(
                 "Streaming",
                 help: "Transcribe while you speak, not only after you let go."
             ) { toggle(\.streaming) }

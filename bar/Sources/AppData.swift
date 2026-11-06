@@ -64,6 +64,10 @@ struct NativeSettings: Codable, Equatable {
     /// Keep the small capsule on screen between dictations. Off shows it only while
     /// dictating (and while a meeting records, so the red light stays visible).
     var showIdleCapsule: Bool
+    /// Settings > Advanced > Fast correction: prompt-lookup drafts for the prompted
+    /// correction model (Gemma). Same text, faster on long dictations. The engine reads it
+    /// from settings.json for every request. On by default.
+    var promptLookup: Bool
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
@@ -92,6 +96,7 @@ struct NativeSettings: Codable, Equatable {
         case clipboardAfterPaste = "clipboard_after_paste"
         case showInDock = "show_in_dock"
         case showIdleCapsule = "show_idle_capsule"
+        case promptLookup = "prompt_lookup"
     }
 
     init(
@@ -120,7 +125,8 @@ struct NativeSettings: Codable, Equatable {
         streamRefine: Bool? = nil,
         clipboardAfterPaste: ClipboardAfterPaste = .dictation,
         showInDock: Bool = true,
-        showIdleCapsule: Bool = true
+        showIdleCapsule: Bool = true,
+        promptLookup: Bool = true
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -148,6 +154,7 @@ struct NativeSettings: Codable, Equatable {
         self.clipboardAfterPaste = clipboardAfterPaste
         self.showInDock = showInDock
         self.showIdleCapsule = showIdleCapsule
+        self.promptLookup = promptLookup
     }
 
     init(from decoder: Decoder) throws {
@@ -206,6 +213,7 @@ struct NativeSettings: Codable, Equatable {
         showInDock = try values.decodeIfPresent(Bool.self, forKey: .showInDock) ?? true
         showIdleCapsule =
             try values.decodeIfPresent(Bool.self, forKey: .showIdleCapsule) ?? true
+        promptLookup = try values.decodeIfPresent(Bool.self, forKey: .promptLookup) ?? true
     }
 }
 

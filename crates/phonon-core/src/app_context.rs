@@ -418,6 +418,17 @@ pub fn with_writing_mode(context: Option<Value>, mode: Option<&str>) -> Option<V
     Some(context)
 }
 
+/// `context` with `"prompt_lookup": false` when the setting is off; unchanged when on (the
+/// sidecar's default), so a request with the setting on is the same as before it existed.
+pub fn with_prompt_lookup(context: Option<Value>, enabled: bool) -> Option<Value> {
+    if enabled {
+        return context;
+    }
+    let mut context = context.unwrap_or_else(|| json!({}));
+    context["prompt_lookup"] = json!(false);
+    Some(context)
+}
+
 /// The approved style preferences from settings.json, parsed again only
 /// when the file changes (size or modification time). Every polish request
 /// asks, previews included, so reading and parsing the file each time was
@@ -436,6 +447,9 @@ pub struct StylePreferenceCache {
     /// `writing_style` from the same file when it names one refiner mode
     /// (Settings > Advanced); None follows the app.
     writing_mode: Option<String>,
+    /// `prompt_lookup` from the same file (Settings > Advanced): prompt-lookup drafts for
+    /// the prompted correction model. On when absent.
+    prompt_lookup: bool,
     /// Successful parses (for tests and diagnostics).
     pub loads: usize,
     /// File reads and parse attempts (for tests and diagnostics).
@@ -453,8 +467,15 @@ impl StylePreferenceCache {
         Self {
             path,
             live_text: false,
+            prompt_lookup: true,
             ..Self::default()
         }
+    }
+
+    /// settings.json `prompt_lookup` as the file says now; true when absent.
+    pub fn prompt_lookup(&mut self) -> bool {
+        self.refresh();
+        self.prompt_lookup
     }
 
     pub fn styles_for(&mut self, category: AppCategory) -> Vec<String> {
@@ -493,6 +514,7 @@ impl StylePreferenceCache {
             self.styles.clear();
             self.live_text = false;
             self.writing_mode = None;
+            self.prompt_lookup = true;
             return;
         };
         let stamp = Some((meta.modified().ok(), meta.len()));
@@ -536,6 +558,11 @@ impl StylePreferenceCache {
                     .and_then(Value::as_str)
                     .filter(|mode| WRITING_STYLES.contains(mode))
                     .map(str::to_string);
+                self.prompt_lookup = settings
+                    .extra
+                    .get("prompt_lookup")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
                 self.content = Some(hash);
                 self.failed = None;
             }
@@ -932,7 +959,14 @@ mod tests {
             .unwrap();
             assert_eq!(cache.writing_mode().as_deref(), mode, "{style}");
         }
+        // prompt lookup: on when absent, a flipped setting applies at the next ask
+        assert!(cache.prompt_lookup());
+        std::fs::write(&path, r#"{"schema_version":2,"prompt_lookup":false}"#).unwrap();
+        assert!(!cache.prompt_lookup(), "flipped off: the next dictation decodes plainly");
+        std::fs::write(&path, r#"{"schema_version":2,"prompt_lookup":true}"#).unwrap();
+        assert!(cache.prompt_lookup());
         std::fs::remove_file(&path).unwrap();
+        assert!(cache.prompt_lookup(), "no file: the default");
         assert_eq!(cache.writing_mode(), None);
         assert!(cache.styles_for(AppCategory::Chat).is_empty());
         assert!(!cache.live_text(), "no file: the default");
