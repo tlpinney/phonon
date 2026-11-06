@@ -27,9 +27,9 @@ final class LiveTextTests: XCTestCase {
 
     func testLiveTextSettingsDefaultAndRoundTrip() throws {
         let empty = try JSONDecoder().decode(NativeSettings.self, from: Data("{}".utf8))
-        XCTAssertFalse(empty.liveText, "off by default: the capsule's energy is the feedback")
+        XCTAssertTrue(empty.liveText, "on by default")
         XCTAssertEqual(empty.liveTextStyle, .fade)
-        XCTAssertFalse(NativeSettings().liveText)
+        XCTAssertTrue(NativeSettings().liveText)
         var settings = NativeSettings()
         settings.liveText = false
         settings.liveTextStyle = .blur

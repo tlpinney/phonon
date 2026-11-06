@@ -451,7 +451,7 @@ pub struct StylePreferenceCache {
     /// the prompted correction model. On when absent.
     prompt_lookup: bool,
     /// `session_context` from the same file (Settings > Privacy): read the AI coding session
-    /// being dictated into for spelling. Off when absent.
+    /// being dictated into for spelling. On when absent.
     session_context: bool,
     /// Successful parses (for tests and diagnostics).
     pub loads: usize,
@@ -469,8 +469,9 @@ impl StylePreferenceCache {
     pub fn new(path: Option<std::path::PathBuf>) -> Self {
         Self {
             path,
-            live_text: false,
+            live_text: true,
             prompt_lookup: true,
+            session_context: true,
             ..Self::default()
         }
     }
@@ -481,7 +482,7 @@ impl StylePreferenceCache {
         self.prompt_lookup
     }
 
-    /// settings.json `session_context` as the file says now; false when absent.
+    /// settings.json `session_context` as the file says now; true when absent.
     pub fn session_context(&mut self) -> bool {
         self.refresh();
         self.session_context
@@ -521,10 +522,10 @@ impl StylePreferenceCache {
             self.stamp = None;
             self.content = None;
             self.styles.clear();
-            self.live_text = false;
+            self.live_text = true;
             self.writing_mode = None;
             self.prompt_lookup = true;
-            self.session_context = false;
+            self.session_context = true;
             return;
         };
         let stamp = Some((meta.modified().ok(), meta.len()));
@@ -577,7 +578,7 @@ impl StylePreferenceCache {
                     .extra
                     .get("session_context")
                     .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                    .unwrap_or(true);
                 self.content = Some(hash);
                 self.failed = None;
             }
@@ -948,15 +949,15 @@ mod tests {
             "an approval applies next time"
         );
         assert_eq!(cache.loads, 2);
-        // live text: off when absent, and a flipped setting applies at the next ask
-        assert!(!cache.live_text());
-        std::fs::write(&path, r#"{"schema_version":2,"live_text":true}"#).unwrap();
-        assert!(cache.live_text(), "flipped on: the next dictation shows it");
+        // live text: on when absent, and a flipped setting applies at the next ask
+        assert!(cache.live_text());
         std::fs::write(&path, r#"{"schema_version":2,"live_text":false}"#).unwrap();
         assert!(
             !cache.live_text(),
             "flipped off: the next dictation shows no live text"
         );
+        std::fs::write(&path, r#"{"schema_version":2,"live_text":true}"#).unwrap();
+        assert!(cache.live_text(), "flipped on: the next dictation shows it");
         // writing style: follows the app unless one refiner mode is picked
         assert_eq!(cache.writing_mode(), None);
         for (style, mode) in [
@@ -980,16 +981,16 @@ mod tests {
         assert!(!cache.prompt_lookup(), "flipped off: the next dictation decodes plainly");
         std::fs::write(&path, r#"{"schema_version":2,"prompt_lookup":true}"#).unwrap();
         assert!(cache.prompt_lookup());
-        // session context: off when absent
-        assert!(!cache.session_context());
-        std::fs::write(&path, r#"{"schema_version":2,"session_context":true}"#).unwrap();
-        assert!(cache.session_context(), "flipped on: the next dictation reads the session");
+        // session context: on when absent
+        assert!(cache.session_context());
+        std::fs::write(&path, r#"{"schema_version":2,"session_context":false}"#).unwrap();
+        assert!(!cache.session_context(), "flipped off: the next dictation does not read it");
         std::fs::remove_file(&path).unwrap();
         assert!(cache.prompt_lookup(), "no file: the default");
-        assert!(!cache.session_context(), "no file: off");
+        assert!(cache.session_context(), "no file: on");
         assert_eq!(cache.writing_mode(), None);
         assert!(cache.styles_for(AppCategory::Chat).is_empty());
-        assert!(!cache.live_text(), "no file: the default");
+        assert!(cache.live_text(), "no file: the default");
         let _ = std::fs::remove_dir_all(&directory);
     }
 

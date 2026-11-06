@@ -611,13 +611,13 @@ fn default_microphone_priority() -> Vec<String> {
 }
 
 fn default_shortcut_mode() -> String {
-    "fn".into()
+    "right_option".into()
 }
 
 /// Off: the owner found the text a lot to look at mid-dictation (2026-11-05); the capsule's
 /// energy is the default feedback.
 fn default_live_text() -> bool {
-    false
+    true
 }
 
 fn default_live_text_style() -> String {
@@ -1479,7 +1479,7 @@ mod tests {
         )
         .unwrap();
         assert!(settings.instant_mic);
-        assert_eq!(settings.shortcut_mode, "fn");
+        assert_eq!(settings.shortcut_mode, "right_option");
         assert_eq!(settings.profile_prefix, super::DEFAULT_PROFILE_PREFIX);
         assert!(settings.competitor_quit_muted.is_empty());
     }
@@ -1496,10 +1496,13 @@ mod tests {
     }
 
     #[test]
-    fn live_text_defaults_off_and_round_trips() {
+    fn live_text_defaults_on_and_round_trips() {
         let absent: SettingsFile = serde_json::from_str(r#"{"schema_version":2}"#).unwrap();
-        assert!(!absent.live_text);
-        assert!(!SettingsFile::default().live_text);
+        assert!(absent.live_text);
+        assert!(SettingsFile::default().live_text);
+        let off: SettingsFile =
+            serde_json::from_str(r#"{"schema_version":2,"live_text":false}"#).unwrap();
+        assert!(!off.live_text);
         let on: SettingsFile =
             serde_json::from_str(r#"{"schema_version":2,"live_text":true}"#).unwrap();
         assert!(on.live_text);

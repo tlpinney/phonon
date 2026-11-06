@@ -1581,12 +1581,12 @@ struct PermissionSummary: View {
     }
 }
 
-/// First run only. Both switches retain data, so neither is on until asked.
+/// First run only. Both switches retain or read data; they start on and the user decides.
 struct PrivacyChoiceView: View {
     @ObservedObject var store: NativeAppStore
     let onDone: () -> Void
-    @State private var localHistory = false
-    @State private var screenContext = false
+    @State private var localHistory = true
+    @State private var screenContext = true
     @State private var clipboard = ClipboardAfterPaste.dictation
 
     var body: some View {

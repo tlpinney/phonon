@@ -23,24 +23,25 @@ final class AppDataTests: XCTestCase {
 
         let store = NativeAppStore(supportDirectory: directory)
         XCTAssertTrue(store.settings.instantMic)
-        XCTAssertEqual(store.settings.shortcutMode, "fn")
+        XCTAssertEqual(store.settings.shortcutMode, "right_option")
 
         store.updateSettings {
             $0.instantMic = false
-            $0.shortcutMode = "right_option"
+            $0.shortcutMode = "fn"
         }
         let saved = try JSONDecoder().decode(
             NativeSettings.self,
             from: Data(contentsOf: directory.appendingPathComponent("settings.json")))
         XCTAssertFalse(saved.instantMic)
-        XCTAssertEqual(saved.shortcutMode, "right_option")
+        XCTAssertEqual(saved.shortcutMode, "fn")
         XCTAssertFalse(saved.screenContext)
     }
 
-    func testFreshInstallKeepsRetainingFeaturesOffUntilAsked() throws {
+    func testFreshInstallStartsWithHistoryAndScreenContextOnAndAsks() throws {
         let store = NativeAppStore(supportDirectory: directory)
-        XCTAssertFalse(store.settings.localHistory)
-        XCTAssertFalse(store.settings.screenContext)
+        XCTAssertTrue(store.settings.localHistory)
+        XCTAssertTrue(store.settings.screenContext)
+        XCTAssertTrue(store.settings.sessionContext)
         XCTAssertTrue(store.needsPrivacyChoice)
         XCTAssertEqual(
             store.settings.historyRetentionDays, NativeSettings.keepRecordingsForever)

@@ -70,7 +70,7 @@ struct NativeSettings: Codable, Equatable {
     var promptLookup: Bool
     /// Settings > Privacy > Use the AI coding session for spelling: read the Claude Code or
     /// Codex session being dictated into for its file names and identifiers. The engine
-    /// reads it from settings.json for every request. Off by default.
+    /// reads it from settings.json for every request. On by default.
     var sessionContext: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -107,12 +107,12 @@ struct NativeSettings: Codable, Equatable {
     init(
         schemaVersion: Int = NativeSettings.currentSchemaVersion,
         streaming: Bool = true,
-        localHistory: Bool = false,
-        screenContext: Bool = false,
+        localHistory: Bool = true,
+        screenContext: Bool = true,
         microphonePriority: [String] = [],
         instantMic: Bool = true,
         soundFeedback: Bool = false,
-        shortcutMode: String = "fn",
+        shortcutMode: String = "right_option",
         privacyChoiceMade: Bool = false,
         historyRetentionDays: Int = NativeSettings.keepRecordingsForever,
         competitorQuitMuted: [String] = [],
@@ -124,7 +124,7 @@ struct NativeSettings: Codable, Equatable {
         meetingAutoStart: Bool = false,
         checkForUpdates: Bool = true,
         updateAnnounced: String = "",
-        liveText: Bool = false,
+        liveText: Bool = true,
         liveTextStyle: LiveTextStyle = .fade,
         writingStyle: WritingStyle = .app,
         streamRefine: Bool? = nil,
@@ -132,7 +132,7 @@ struct NativeSettings: Codable, Equatable {
         showInDock: Bool = true,
         showIdleCapsule: Bool = true,
         promptLookup: Bool = true,
-        sessionContext: Bool = false
+        sessionContext: Bool = true
     ) {
         self.schemaVersion = schemaVersion
         self.streaming = streaming
@@ -169,19 +169,18 @@ struct NativeSettings: Codable, Equatable {
         let storedSchema = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         schemaVersion = storedSchema
         streaming = try values.decodeIfPresent(Bool.self, forKey: .streaming) ?? true
-        // Before schema 2 both defaulted to on, so an absent key on an existing
-        // install means the owner was running with it enabled.
         let legacyDefault = storedSchema < 2
-        localHistory = try values.decodeIfPresent(Bool.self, forKey: .localHistory) ?? legacyDefault
+        localHistory = try values.decodeIfPresent(Bool.self, forKey: .localHistory) ?? true
         screenContext =
-            try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? legacyDefault
+            try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? true
         microphonePriority = try values.decodeIfPresent([String].self, forKey: .microphonePriority)
             ?? []
         instantMic = try values.decodeIfPresent(Bool.self, forKey: .instantMic) ?? true
         // Silent unless asked for. Dictation is held down mid-sentence and a
         // cue on every press is intrusive, so nobody gets one by default.
         soundFeedback = try values.decodeIfPresent(Bool.self, forKey: .soundFeedback) ?? false
-        shortcutMode = try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "fn"
+        shortcutMode =
+            try values.decodeIfPresent(String.self, forKey: .shortcutMode) ?? "right_option"
         // An existing install already chose these in Settings; do not re-prompt.
         privacyChoiceMade =
             try values.decodeIfPresent(Bool.self, forKey: .privacyChoiceMade) ?? legacyDefault
@@ -206,7 +205,7 @@ struct NativeSettings: Codable, Equatable {
         checkForUpdates = try values.decodeIfPresent(Bool.self, forKey: .checkForUpdates) ?? true
         updateAnnounced =
             try values.decodeIfPresent(String.self, forKey: .updateAnnounced) ?? ""
-        liveText = try values.decodeIfPresent(Bool.self, forKey: .liveText) ?? false
+        liveText = try values.decodeIfPresent(Bool.self, forKey: .liveText) ?? true
         liveTextStyle =
             (try? values.decodeIfPresent(String.self, forKey: .liveTextStyle))
             .flatMap { $0 }.flatMap(LiveTextStyle.init(rawValue:)) ?? .fade
@@ -222,7 +221,7 @@ struct NativeSettings: Codable, Equatable {
             try values.decodeIfPresent(Bool.self, forKey: .showIdleCapsule) ?? true
         promptLookup = try values.decodeIfPresent(Bool.self, forKey: .promptLookup) ?? true
         sessionContext =
-            try values.decodeIfPresent(Bool.self, forKey: .sessionContext) ?? false
+            try values.decodeIfPresent(Bool.self, forKey: .sessionContext) ?? true
     }
 }
 

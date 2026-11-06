@@ -164,9 +164,9 @@ after the models rather than the app, and no uninstaller touches them.
 
 ## Local data
 
-Nothing is retained until you say so. On first launch the app asks once whether
-to keep local history and whether to read the screen for context; both start off,
-and declining leaves dictation fully working. Settings carries the retention
+On first launch the app asks once whether to keep local history and whether to
+read the screen for context; both start on, and turning them off leaves
+dictation fully working. Settings carries the retention
 window (keep until deleted, or 7 / 30 / 90 days) and a clear-everything button.
 
 With local history on, every recording is kept with its metadata:
@@ -215,12 +215,12 @@ password managers are always private.
 
 - One capsule at the bottom of the screen; it widens with your voice while
   listening and breathes while the text is corrected.
-- Hold Globe (fn) to talk and release to type into the frontmost app.
-- Double-tap Globe to keep recording; tap once to stop and type.
+- Hold Right Option (⌥) to talk and release to type into the frontmost app.
+- Double-tap it to keep recording; tap once to stop and type.
 
-Globe (fn) is the default shortcut. Settings can switch the hold key to Right
-Option (⌥), and either hold key can be paired with a Control-Space toggle.
-macOS also acts on the Globe key, so set System Settings › Keyboard ›
+Right Option (⌥) is the default shortcut. Settings can switch the hold key to
+Globe (fn), and either hold key can be paired with a Control-Space toggle.
+With Globe, macOS also acts on the key, so set System Settings › Keyboard ›
 "Press 🌐 key to" to "Do Nothing".
 
 Recording cues are off by default. Turning them on plays a short rising sweep
