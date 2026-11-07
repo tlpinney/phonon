@@ -294,6 +294,20 @@ enum ShortcutPolicy {
     }
 }
 
+enum RightOptionKey {
+    /// NX_DEVICERALTKEYMASK: the device-dependent bit for the right Option key.
+    static let deviceMask: UInt64 = 0x40
+
+    /// Right Option held with no Command, Control or Shift. Left Option does not count.
+    static func isHeldAlone(_ flags: CGEventFlags) -> Bool {
+        flags.rawValue & deviceMask != 0
+            && flags.contains(.maskAlternate)
+            && !flags.contains(.maskCommand)
+            && !flags.contains(.maskControl)
+            && !flags.contains(.maskShift)
+    }
+}
+
 /// Tap and double-tap logic for a hold-to-talk key, fed raw key-down and
 /// key-up events with monotonic nanosecond timestamps.
 ///
@@ -3442,11 +3456,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         if type == .flagsChanged {
             let flags = event.flags
-            let anyAlt =
-                flags.contains(.maskAlternate)
-                && !flags.contains(.maskCommand)
-                && !flags.contains(.maskControl)
-                && !flags.contains(.maskShift)
+            let rightAlt = RightOptionKey.isHeldAlone(flags)
             // The Globe/fn key reports through this same tap as its own flag.
             // Require it to be the only modifier, so fn-qualified keys such as
             // the arrow cluster can never open a recording.
@@ -3465,12 +3475,12 @@ final class AppController: NSObject, NSApplicationDelegate {
                     if self.optionTapLatch.latched && !self.isRecording {
                         self.optionTapLatch.reset()
                     }
-                    if anyAlt && !self.optionDown {
+                    if rightAlt && !self.optionDown {
                         self.optionDown = true
                         self.applyHoldKey(
                             self.optionTapLatch.keyDown(at: eventNs),
                             source: "right-option", eventNs: eventNs, callbackNs: callbackNs)
-                    } else if !anyAlt && self.optionDown {
+                    } else if !rightAlt && self.optionDown {
                         self.optionDown = false
                         self.applyHoldKey(
                             self.optionTapLatch.keyUp(at: eventNs),
