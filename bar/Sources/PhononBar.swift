@@ -1328,6 +1328,15 @@ final class MicRecorder {
         }
     }
 
+    /// Names the device the next dictation will use without opening it.
+    func refreshSelectedDeviceName() {
+        guard configuredDeviceID == nil,
+            let device = CoreAudioInputDevices.resolve(
+                priorities: BarSettings.microphonePriorities())
+        else { return }
+        selectedDeviceName = device.name
+    }
+
     func start() throws {
         try ensureHardwareRunning()
         lock.lock()
@@ -1547,6 +1556,9 @@ final class MicRecorder {
     }
 
     func releaseHardware() {
+        pendingReselect?.cancel()
+        pendingReselect = nil
+        reselectRetries = 0
         if configuredDeviceID != nil {
             engine.inputNode.removeTap(onBus: 0)
         }
@@ -2365,6 +2377,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func updateMicrophoneStatus() {
+        recorder.refreshSelectedDeviceName()
         microphoneMenuItem?.title = "Microphone: Auto → \(recorder.selectedDeviceName)"
         appStore.selectedMicrophone = recorder.selectedDeviceName
     }

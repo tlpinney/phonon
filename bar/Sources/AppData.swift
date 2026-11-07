@@ -110,7 +110,7 @@ struct NativeSettings: Codable, Equatable {
         localHistory: Bool = true,
         screenContext: Bool = true,
         microphonePriority: [String] = [],
-        instantMic: Bool = true,
+        instantMic: Bool = false,
         soundFeedback: Bool = false,
         shortcutMode: String = "right_option",
         privacyChoiceMade: Bool = false,
@@ -175,7 +175,7 @@ struct NativeSettings: Codable, Equatable {
             try values.decodeIfPresent(Bool.self, forKey: .screenContext) ?? true
         microphonePriority = try values.decodeIfPresent([String].self, forKey: .microphonePriority)
             ?? []
-        instantMic = try values.decodeIfPresent(Bool.self, forKey: .instantMic) ?? true
+        instantMic = try values.decodeIfPresent(Bool.self, forKey: .instantMic) ?? false
         // Silent unless asked for. Dictation is held down mid-sentence and a
         // cue on every press is intrusive, so nobody gets one by default.
         soundFeedback = try values.decodeIfPresent(Bool.self, forKey: .soundFeedback) ?? false
